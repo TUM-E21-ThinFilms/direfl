@@ -884,7 +884,7 @@ def plotamp(Q, r, dr=None, scaled=True, ylabel="Real R", **kw):
         pylab.fill_between(Q, scale*(r-dr), scale*(r+dr),
                            color=h.get_color(), alpha=0.2)
     pylab.ylabel(ylabel)
-    pylab.xlabel("Q (inv A)")
+    pylab.xlabel("Q $[\AA^{-1}]$")
 
 
 class Interpolator():
@@ -916,10 +916,13 @@ def remesh(data, xmin, xmax, npts, left=None, right=None):
 
     x, y = data
     x, y = x[isfinite(x)], y[isfinite(y)]
-    if npts > len(x):
-        npts = len(x)
+    #if npts > len(x):
+    #    npts = len(x)
     newx = linspace(xmin, xmax, npts)
-    newy = interp(newx, x, y, left=left, right=right)
+    from scipy.interpolate import interp1d
+    fnew = interp1d(x, y, kind="quadratic", bounds_error=False, fill_value=(left, right))
+    newy = fnew(newx)
+    #newy = interp(newx, x, y, left=left, right=right)
     return array((newx, newy))
 
 
@@ -1484,6 +1487,9 @@ def _phase_reconstruction(Q, R1sq, R2sq, rho_u, rho_v1, rho_v2):
     Compute phase reconstruction from back reflectivity on paired samples
     with varying surface materials.
 
+    "Fixed Nonvacuum Fronting, Variable Backing"
+        Uses eq. (31), (32) from [Majkrzak2003].
+
     Inputs::
 
         *Q*  is the measurement positions
@@ -1494,6 +1500,15 @@ def _phase_reconstruction(Q, R1sq, R2sq, rho_u, rho_v1, rho_v2):
     Returns RealR, ImagR
     """
 
+    # The used notation here is different from the paper [Majkrzak2003].
+    # To more easily understand the code, take a look at the following translation table
+    #
+    # Paper             |   Code
+    # f^2               =   usq
+    # f^2(a^2 + f^2b^2) =   alpha
+    # f^2(d^2 + c^2)    =   beta
+    # \Sigma^{fh_i}     =   sigmai with i = 1, 2
+    # h_1^2, h_1^2      =   v1sq, v2sq
     Qsq = Q**2 + 16.*pi*rho_u*1e-6
     usq, v1sq, v2sq = [(1-16*pi*rho*1e-6/Qsq) for rho in (rho_u, rho_v1, rho_v2)]
 

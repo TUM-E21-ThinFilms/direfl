@@ -66,6 +66,9 @@ class SLDProfile(object):
 
 class ConstantSLDProfile(SLDProfile):
     def __init__(self, sld, thickness, sigma=0):
+        if sld > 15:
+            raise RuntimeError("SLD seems to be unreasonable high")
+
         self._sld = float(sld)
         self._d = float(thickness)
         self._r = float(sigma)

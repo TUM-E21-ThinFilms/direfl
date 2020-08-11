@@ -7,30 +7,31 @@ from numpy import array
 from .invert import SurroundVariation, remesh
 from .sld_profile import SLDProfile, refr_idx
 
+from skipi.function import Function
+
 try:  # CRUFT: basestring isn't used in python3
     basestring
 except:
     basestring = str
 
+ZERO_TOL = 1e-10
+# The tolerance to decide, when the reflectivity is 1, i.e. |r - 1| < tol.
+REFLECTIVITY_UNITY_TOL = 1e-10
+MATRIX_ILL_CONDITIONED = 1e10
 
 """
     References:
     
-    [Majkrzak2003] C. F. Majkrzak, N. F. Berk: Physica B 336 (2003) 27-38
-        Phase sensitive reflectometry and the unambiguous determination
-        of scattering  length density profiles
+    [Majkrzak2003] C. F. Majkrzak, N. F. Berk and U. A. Perez-Salas. Langmuir (2003), 19, 7796-7810.
+    Phase-Sensitive Neutron Reflectometry
 """
+
 
 class AbstractReferenceVariation(SurroundVariation):
     def __init__(self, fronting_sld, backing_sld):
         self._f = float(fronting_sld)
         self._b = float(backing_sld)
         self._measurements = []
-
-        # The tolerance to decide, when the reflectivity is 1, i.e. |r - 1| < tol.
-        self.REFLECTIVITY_UNITY_TOL = 1e-10
-        self.ZERO_TOL = 1e-10
-        self.MATRIX_ILL_CONDITIONED = 1e10
 
         self.dImagR = None
         self.dRealR = None
@@ -54,13 +55,13 @@ class AbstractReferenceVariation(SurroundVariation):
 
         slds = [ms['sld'] for ms in self._measurements]
 
-        # Checkts that there are no duplicate slds added
+        # Checks that there are no duplicate SLDs added
         # duplicate sld profile yield a singular matrix in the constraint system (obviously)
         if any([x == y for i, x in enumerate(slds) for j, y in enumerate(slds) if i != j]):
             raise RuntimeWarning("Two equal sld profiles found. The profiles have to be "
                                  "different.")
 
-    def remesh(self):
+    def remesh(self, interpolation=1, interpolation_kind=None):
 
         qmin, qmax, npts = [], [], []
         for measurement in self._measurements:
@@ -72,13 +73,24 @@ class AbstractReferenceVariation(SurroundVariation):
         qmax = min(qmax)
         npts = min(npts)
 
+        new_mesh = numpy.linspace(qmin, qmax, npts + 1)
+
         for measurement in self._measurements:
             q, R, dR = measurement['Qin'], measurement['Rin'], measurement['dRin']
 
-            q, R = remesh([q, R], qmin, qmax, npts, left=0, right=0)
-            if dR is not None:
-                q, dR = remesh([q, dR], qmin, qmax, npts, left=0, right=0)
+            f = Function.to_function(q, R, interpolation=interpolation_kind).remesh(new_mesh).oversample(
+                interpolation)
 
+            if dR is not None:
+                df = Function.to_function(q, dR, interpolation=interpolation_kind).remesh(
+                    new_mesh).oversample(interpolation)
+                dR = df.eval()
+
+            q, R = f.get_domain(), f.eval()
+
+            # q, R = remesh([q, R], qmin, qmax, npts, left=0, right=0)
+            # if dR is not None:
+            #    q, dR = remesh([q, dR], qmin, qmax, npts, left=0, right=0)
             measurement['Qin'], measurement['Rin'], measurement['dRin'] = q, R, dR
 
     def load_data(self, q, R, dq, dR, sld_profile, name='unknown'):
@@ -89,7 +101,7 @@ class AbstractReferenceVariation(SurroundVariation):
 
         self.number_measurements = len(self._measurements)
 
-    def load(self, file, sld_profile, use_columns=None):
+    def load(self, file, sld_profile, use_columns=None, q0=0):
         assert isinstance(sld_profile, SLDProfile)
 
         if isinstance(file, basestring):
@@ -115,13 +127,30 @@ class AbstractReferenceVariation(SurroundVariation):
         elif ncols >= 5:
             q, dq, r, dr, lamb = d[0:5]
 
+        if dq is not None:
+            dq = dq[q > q0]
+
+        if dr is None:
+            dr = numpy.array(len(r) * [0.0])
+
+        dr = dr[q > q0]
+        r = r[q > q0]
+        q = q[q > q0]
+
         self._measurements.append(
             {'name': name, 'Qin': q, 'dQin': dq, 'Rin': r, 'dRin': dr, 'sld': sld_profile})
 
         self.number_measurements = len(self._measurements)
+        return self.number_measurements
+
+    def data_manipulation(self, index, manipulation_function):
+        ms = self._measurements[index]
+        q, dq, r, dr = ms['Qin'], ms['dQin'], ms['Rin'], ms['dRin']
+        q, dq, r, dr = manipulation_function(q, dq, r, dr)
+        ms['Qin'], ms['dQin'], ms['Rin'], ms['dRin'] = q, dq, r, dr
 
     def _calc(self):
-        self.Q, self.Rall = self._phase_reconstruction()
+        self.Q, self.Rall, self.dR = self._phase_reconstruction()
         l = len(self.Rall)
         self.Rp, self.Rm = numpy.zeros(l, dtype=complex), numpy.zeros(l, dtype=complex)
         for idx, el in enumerate(self.Rall):
@@ -136,22 +165,41 @@ class AbstractReferenceVariation(SurroundVariation):
         self.R = self.Rp
         self.RealR, self.ImagR = self.R.real, self.R.imag
 
-    def _refl(self, alpha_u, beta_u, gamma_u):
+    @classmethod
+    def _refl(cls, alpha_u, beta_u, gamma_u):
         # Compute the reflection coefficient, based on the knowledge of alpha_u, beta_u,
         # gamma_u where these parameters are the solution of the matrix equation
         #
         # See eq (38)-(40) in [Majkrzak2003]
-        return - (alpha_u - beta_u + 2 * 1j * gamma_u) / (alpha_u + beta_u + 2)
+        return - (alpha_u - beta_u + 2*1j * gamma_u) / (alpha_u + beta_u + 2)
 
-    def _calc_refl_constraint(self, q, reflectivity, sld_reference, fronting,
-                              backing):
+    @classmethod
+    def _drefl(cls, alpha, beta, gamma, cov):
+
+        a, b, g = alpha, beta, gamma
+
+        dAlpha = - 2 * (b + 1) / (a + b + 2) ** 2
+        dBeta = 2 * (a + 1) / (a + b + 2) ** 2
+
+        dAlphaIm = -2 * g / (a + b + 2) ** 2
+        dBetaIm = -2 * g / (a + b + 2) ** 2
+        dGammaIm = -2 / (a + b + 2)
+
+        sResqr = dAlpha ** 2 * cov[0][0] + dBeta ** 2 * cov[1][1] + 2 * dAlpha * dBeta * cov[0][1]
+        sImsqr = dAlphaIm ** 2 * cov[0][0] + dBetaIm ** 2 * cov[1][1] + dGammaIm ** 2 * cov[2][2] + \
+                 2 * dAlphaIm * dBetaIm * cov[0][1] + \
+                 2 * dAlphaIm * dGammaIm * cov[0][2] + \
+                 2 * dBetaIm * dGammaIm * cov[1][2]
+
+        return numpy.sqrt(sResqr) + 1j*numpy.sqrt(sImsqr)
+
+    @classmethod
+    def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting, backing):
         # See the child classes for implementations
         raise NotImplementedError()
 
-    def _phase_reconstruction(self):
+    def _do_phase_reconstruction(self, q, Rs, dRs, SLDs):
         """
-        Here, we reconstruct the reflection coefficients for every q.
-
         The calculation is split up in multiple parts (to keep the code repetition low).
         First, we calculate the constraining linear equations for the reflection coefficient.
         Only this depends on the location of the reference layer (front or back). Next,
@@ -160,53 +208,85 @@ class AbstractReferenceVariation(SurroundVariation):
         reflection coefficients). Using the solution of the linear system, we finally
         calculate the reflection coefficient.
 
+        Note that this reconstructs the reflection and also returns a new q value since this might have
+        changed do to a non-zero fronting medium.
+
+        :param q: The q value
+        :param Rs: The reflections measured at q
+        :param SLDs: The SLDs corresponding to the reflections
+        :return: q_new, Reflection
+        """
+        # Shift the q vector if the incidence medium is not vacuum
+        # See eq (49) in [Majkrzak2003]
+        #
+        # Note that this also prohibits to measure the phase information
+        # below the critical edge by simply flipping the sample.
+        # The first q value you effectively measure is the first
+        # one direct _after_ the critical edge ..
+        q = cmath.sqrt(q ** 2 + 16.0 * pi * self._f).real
+
+        # Skip those q values which are too close to zero, this would break the
+        # refractive index calculation otherwise
+        if abs(q) < ZERO_TOL:
+            return None
+
+        f = refr_idx(q, self._f)
+        b = refr_idx(q, self._b)
+
+        A = []
+        c = []
+        # Calculate for each measurement a linear constraint. Putting all of the
+        # constraints together enables us to solve for the reflection itself. How to
+        # calculate the linear constraint using a reference layer can be
+        # found in [Majkrzak2003]
+
+        for R, dR, SLD in zip(Rs, dRs, SLDs):
+            # Don't use values close to the total refection regime.
+            # You can't reconstruct the reflection below there with this method.
+            if abs(R - 1) < REFLECTIVITY_UNITY_TOL:
+                return None
+
+            lhs, rhs, drhs = self._calc_refl_constraint(q, R, SLD, f, b)
+
+            sigma = 1e-10
+
+            # Note: the right hand side is a function of R and thus, the std deviation if the rhs is
+            # simply the derivative times the std deviation of R
+            if abs(dR) > ZERO_TOL:
+                sigma = drhs * dR
+
+            # divide by sigma, so that we do a chi squared minimization.
+            A.append(numpy.array(lhs) / sigma)
+            c.append(rhs / sigma)
+
+        try:
+            R, dR = self._solve_reference_layer(A, c)
+            return q, R, dR
+        except RuntimeWarning as e:
+            print("Could not reconstruct the phase for q = {}. Reason: {}".format(q, e))
+
+    def _phase_reconstruction(self):
+        """
+        Here, we reconstruct the reflection coefficients for every q.
+
         :return: q, r(q) for each q
         """
-        qs = []
-        r = []
+        qr = numpy.empty(len(self._measurements[0]['Qin']), dtype=tuple)
+
+        SLDs = [ms['sld'] for ms in self._measurements]
 
         for idx, q in enumerate(self._measurements[0]['Qin']):
+            Rs = [ms['Rin'][idx] for ms in self._measurements]
+            dRs = [ms['dRin'][idx] for ms in self._measurements]
 
-            # TODO: check this
-            q = cmath.sqrt(q ** 2 + 16.0 * pi * self._f).real
+            qr[idx] = self._do_phase_reconstruction(q, Rs, dRs, SLDs)
 
-            # Skip those q values which are too close to zero, this would break the
-            # refractive index calculation otherwise
-            if abs(q) < self.ZERO_TOL:
-                continue
+        qs, rs, dRs = zip(*qr[qr != None])
 
-            f = refr_idx(q, self._f)
-            b = refr_idx(q, self._b)
+        return numpy.array(qs), numpy.array(rs), numpy.array(dRs)
 
-            A = []
-            c = []
-            # Calculate for each measurement a linear constraint. Putting all of the
-            # constraints together enables us to solve for the reflection itself. How to
-            # calculate the linear constraint using a reference layer can be
-            # found in [Majkrzak2003]
-            for ms in self._measurements:
-
-                # Don't use values close to the total refection regime.
-                # You can't reconstruct the reflection below there with this method.
-                if abs(ms['Rin'][idx] - 1) < self.REFLECTIVITY_UNITY_TOL:
-                    continue
-
-                lhs, rhs = self._calc_refl_constraint(q, ms['Rin'][idx], ms['sld'], f, b)
-
-                A.append(lhs)
-                c.append(rhs)
-
-            try:
-                reflection = self._solve_reference_layer(A, c)
-
-                qs.append(q)
-                r.append(reflection)
-            except RuntimeWarning as e:
-                print("Could not reconstruct the phase for q = {}. Reason: {}".format(q, e))
-
-        return array(qs), array(r)
-
-    def _solve_reference_layer(self, A, c):
+    @classmethod
+    def _solve_reference_layer(cls, A, c):
         """
         Solving the linear system A x = c
             with x = [alpha_u, beta_u, gamma_u], being the unknown coefficients for the
@@ -269,12 +349,12 @@ class AbstractReferenceVariation(SurroundVariation):
             # alpha = u - v * gamma, see above, the linear relationship
             alpha_beta = lambda u, v, g: u - v * g
 
-            if abs(det) < self.ZERO_TOL:
+            if abs(det) < ZERO_TOL:
                 # Luckily, we get just one solution for gamma :D
                 gamma_u = -b / (2 * a)
                 alpha_u = alpha_beta(u[0], v[0], gamma_u)
                 beta_u = alpha_beta(u[1], v[1], gamma_u)
-                return self._refl(alpha_u, beta_u, gamma_u)
+                return cls._refl(alpha_u, beta_u, gamma_u), 0
             elif det > 0:
                 reflection = []
                 # Compute first gamma using both branches of the quadratic solution
@@ -284,31 +364,39 @@ class AbstractReferenceVariation(SurroundVariation):
                     gamma_u = (-b + sign * cmath.sqrt(det).real) / (2 * a)
                     alpha_u = alpha_beta(u[0], v[0], gamma_u)
                     beta_u = alpha_beta(u[1], v[1], gamma_u)
-                    reflection.append(self._refl(alpha_u, beta_u, gamma_u))
+                    reflection.append(cls._refl(alpha_u, beta_u, gamma_u))
 
                 # Returns the reflection branches, R+ and R-
-                return reflection
+                return reflection, 0
             else:
                 # This usually happens is the reference sld's are not correct.
                 raise RuntimeWarning("The quadratic equation has no real solution.")
 
-        if len(A) == 3:
+        """if len(A) == 3:
             # Highly ill-conditioned, better throw away the solution than pretending it's
             # good ...
             # TODO: maybe least squares?
             condition_number = numpy.linalg.cond(A)
-            if condition_number > self.MATRIX_ILL_CONDITIONED:
+            if condition_number > MATRIX_ILL_CONDITIONED:
                 raise RuntimeWarning("Given linear constraints are ill conditioned. "
                                      "Condition number {}".format(condition_number))
 
             alpha_u, beta_u, gamma_u = numpy.linalg.solve(A, c)
-            return self._refl(alpha_u, beta_u, gamma_u)
 
-        if len(A) > 3:
+            return cls._refl(alpha_u, beta_u, gamma_u), 0
+        """
+
+        if len(A) >= 3:
+            # least squares solves exact for 3x3 matrices
+            #
             # Silence the FutureWarning with rcond=None
             solution, residuals, rank, singular_values = numpy.linalg.lstsq(A, c, rcond=None)
             alpha_u, beta_u, gamma_u = solution
-            return self._refl(alpha_u, beta_u, gamma_u)
+
+            # covariance matrix
+            C = numpy.linalg.inv(numpy.array(A).T.dot(A))
+
+            return cls._refl(alpha_u, beta_u, gamma_u), cls._drefl(alpha_u, beta_u, gamma_u, C)
 
     def choose(self, plus_or_minus):
         """
@@ -416,7 +504,8 @@ class AbstractReferenceVariation(SurroundVariation):
 
 class BottomReferenceVariation(AbstractReferenceVariation):
 
-    def _calc_refl_constraint(self, q, reflectivity, sld_reference, fronting,
+    @classmethod
+    def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting,
                               backing):
         """
             Solving the linear system A x = c
@@ -427,6 +516,7 @@ class BottomReferenceVariation(AbstractReferenceVariation):
                 of the equation (38) in [Majkrzak2003]
             This method returns one row in this linear system as: lhs, rhs
             with lhs being one row in the matrix A and rhs being one scalar in the vector b
+            drhs is the "variance" of the rhs, i.e. just the first derivative of rhs
         """
         w, x, y, z = sld_reference.as_matrix(q)
         f, b = fronting, backing
@@ -437,12 +527,15 @@ class BottomReferenceVariation(AbstractReferenceVariation):
 
         lhs = [f ** 2 * beta, b ** 2 * alpha, 2 * f * b * gamma]
         rhs = 2 * f * b * (1 + reflectivity) / (1 - reflectivity)
-        return lhs, rhs
+        drhs = 4 * f * b * 1 / (1 - reflectivity) ** 2
+
+        return lhs, rhs, drhs
 
 
 class TopReferenceVariation(AbstractReferenceVariation):
 
-    def _calc_refl_constraint(self, q, reflectivity, sld_reference, fronting,
+    @classmethod
+    def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting,
                               backing):
         """
             Solving the linear system A x = c
@@ -453,6 +546,7 @@ class TopReferenceVariation(AbstractReferenceVariation):
                 of the equation (33) in [Majkrzak2003]
             This method returns one row in this linear system as: lhs, rhs
             with lhs being one row in the matrix A and rhs being one scalar in the vector b
+            drhs is the "variance" of the rhs, i.e. just the first derivative of rhs
         """
         w, x, y, z = sld_reference.as_matrix(q)
         f, b = fronting, backing
@@ -463,5 +557,6 @@ class TopReferenceVariation(AbstractReferenceVariation):
 
         lhs = [b ** 2 * beta, f ** 2 * alpha, 2 * f * b * gamma]
         rhs = 2 * f * b * (1 + reflectivity) / (1 - reflectivity)
+        drhs = 4 * f * b * 1 / (1 - reflectivity) ** 2
 
-        return lhs, rhs
+        return lhs, rhs, drhs
