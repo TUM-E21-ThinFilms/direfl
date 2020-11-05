@@ -2,9 +2,8 @@ import cmath
 import numpy as np
 
 from math import pi
-from skipi.function import Function
 
-from .invert import SurroundVariation
+from .invert import SurroundVariation, reduce
 from .sld_profile import SLDProfile, refr_idx
 
 try:  # CRUFT: basestring isn't used in python3
@@ -109,16 +108,24 @@ class AbstractReferenceVariation(SurroundVariation):
 
         for measurement in self._measurements:
             q, R, dR = measurement['Qin'], measurement['Rin'], measurement['dRin']
+            try:
+                from skipi.function import Function
+                f = Function.to_function(q, R, interpolation=interpolation_kind).remesh(new_mesh).oversample(
+                    interpolation)
 
-            f = Function.to_function(q, R, interpolation=interpolation_kind).remesh(new_mesh).oversample(
-                interpolation)
+                if dR is not None:
+                    df = Function.to_function(q, dR, interpolation=interpolation_kind).remesh(
+                        new_mesh).oversample(interpolation)
+                    dR = df.eval()
 
-            if dR is not None:
-                df = Function.to_function(q, dR, interpolation=interpolation_kind).remesh(
-                    new_mesh).oversample(interpolation)
-                dR = df.eval()
+                measurement['Qin'], measurement['Rin'], measurement['dRin'] = f.get_domain(), f.eval(), dR
+            except:
+                # Fallback if skipi is not available
+                q, R = remesh([q, R], qmin, qmax, npts, left=0, right=0)
+                if dR is not None:
+                    q, dR = remesh([q, dR], qmin, qmax, npts, left=0, right=0)
 
-            measurement['Qin'], measurement['Rin'], measurement['dRin'] = f.get_domain(), f.eval(), dR
+                measurement['Qin'], measurement['Rin'], measurement['dRin'] = q, R, dR
 
     def load_data(self, q, R, dq, dR, sld_profile, name='unknown'):
         """
@@ -146,6 +153,8 @@ class AbstractReferenceVariation(SurroundVariation):
         :param name: name of the measurement
         :return: None
         """
+        from skipi.function import Function
+
         assert isinstance(sld_profile, SLDProfile)
         assert isinstance(function, Function)
 
