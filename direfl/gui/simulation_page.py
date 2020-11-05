@@ -35,6 +35,8 @@ import os
 import sys
 import time
 
+import numpy as np
+
 import wx
 from wx.lib import delayedresult
 
@@ -57,8 +59,6 @@ from matplotlib.backend_bases import FigureManagerBase
 #from matplotlib import pyplot as plt
 import pylab
 
-import numpy
-from numpy import linspace, inf
 
 from ..api.resolution import bins, binwidths
 from ..api.simulate import Simulation
@@ -603,7 +603,7 @@ class SimulationPage(wx.Panel):
                                    sample_broadening=sample_broadening)
 
             # Compute the resolution.
-            Q = numpy.linspace(params[2], params[3], params[4])
+            Q = np.linspace(params[2], params[3], params[4])
             res = instrument.resolution(Q=Q)
             Q = res.Q
             dQ = res.dQ
@@ -661,7 +661,7 @@ class SimulationPage(wx.Panel):
             L = bins(wavelength[0], wavelength[1], dLoL)
             dL = binwidths(L)
             '''
-            Q = numpy.linspace(params[2], params[3], params[4])
+            Q = np.linspace(params[2], params[3], params[4])
             res = instrument.resolution(Q=Q, L=L, dL=dL)
             print("*** len of Q, res.Q, res.dQ, L:",
                   len(Q), len(res.Q), len(res.dQ), len(L))
@@ -892,7 +892,7 @@ class SimulationPage(wx.Panel):
                             defaultDir=os.getcwd(),
                             defaultFile="",
                             wildcard=DATA_FILES+"|"+TEXT_FILES+"|"+ALL_FILES,
-                            style=wx.OPEN)
+                            style=wx.FD_OPEN)
         # Wait for user to close the dialog.
         sts = dlg.ShowModal()
         if sts == wx.ID_OK:
@@ -1002,7 +1002,7 @@ def perform_simulation(sample, params, Q=None, dQ=None):
 
     # For monochromatic instruments, Q will be None.
     if Q is None:
-        Q = numpy.linspace(params[2], params[3], params[4])
+        Q = np.linspace(params[2], params[3], params[4])
 
     # Create simulated datasets and perform phase reconstruction and phase
     # inversion using the simulated datasets.

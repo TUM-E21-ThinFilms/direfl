@@ -1,4 +1,6 @@
+from math import pi
 import cmath
+<<<<<<< HEAD
 import numpy as np
 
 from math import pi
@@ -22,6 +24,7 @@ REFLECTIVITY_UNITY_TOL = 1e-10
     
     [Majkrzak2003] C. F. Majkrzak, N. F. Berk and U. A. Perez-Salas. Langmuir (2003), 19, 7796-7810.
     Phase-Sensitive Neutron Reflectometry
+
 """
 
 class AbstractReferenceVariation(SurroundVariation):
@@ -422,9 +425,9 @@ class AbstractReferenceVariation(SurroundVariation):
             u = np.linalg.solve(B, c)
             v = np.linalg.solve(B, [A[0][2], A[1][2]])
             # Alternatively
-            # Binv = numpy.linalg.inv(B)
-            # u = numpy.dot(Binv, c)
-            # v = numpy.dot(Binv, [A[0][2], A[1][2]])
+            # Binv = np.linalg.inv(B)
+            # u = np.dot(Binv, c)
+            # v = np.dot(Binv, [A[0][2], A[1][2]])
 
             # Next, we can solve the equation gamma^2 = alpha * beta - 1
             # by simply substituting alpha and beta from above.
@@ -466,9 +469,9 @@ class AbstractReferenceVariation(SurroundVariation):
                 # This usually happens if the reference sld's are not correct.
                 raise RuntimeWarning("The quadratic equation has no real solution.")
 
+
         if len(A) >= 3:
             # least squares solves exact for 3x3 matrices
-            #
             # Silence the FutureWarning with rcond=None
             solution, residuals, rank, singular_values = np.linalg.lstsq(A, c, rcond=None)
             alpha_u, beta_u, gamma_u = solution
