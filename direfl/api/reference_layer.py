@@ -1,10 +1,7 @@
-from math import pi
 import cmath
-<<<<<<< HEAD
 import numpy as np
 
 from math import pi
-
 from skipi.function import Function
 
 from .invert import SurroundVariation
