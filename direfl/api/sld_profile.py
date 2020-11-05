@@ -1,6 +1,7 @@
 import cmath
 import numpy
 
+from functools import reduce
 from math import pi, ceil
 from numpy import array, sin, cos, exp
 from scipy.interpolate import interp1d
@@ -144,13 +145,13 @@ class SlabsSLDProfile(SLDProfile):
 
     @classmethod
     def from_slabs(cls, thickness, sld, roughness, precision=1):
-        # You should rather use the from_sample method, since this easier to
+        # You should rather use the from_sample method, since its easier to
         # understand. This method here is just a kind of 'fallback'
-        # if you dont wanna have the overhead of building the Stacks in refl1d
+        # if you don't wanna have the overhead of building the Stacks in refl1d
         # just to put the data in here..
 
         # WARNING: from_slabs and from_sample do not create the same slab profile
-        # they are shifted profiles (by I'd guess 3*roughness[0])
+        # they are shifted profiles (by I'd guess 3*roughness[0]?)
 
         from refl1d.profile import build_profile
 
@@ -190,7 +191,7 @@ class SlabsSLDProfile(SLDProfile):
         pylab.plot(self._z + offset, rho)
 
     def as_matrix(self, q):
-        from functools import reduce
+
         # len(dz) = len(self._z) - 1
         dz = numpy.diff(self._z)
         m = len(dz) * [None]

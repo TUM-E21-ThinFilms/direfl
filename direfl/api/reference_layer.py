@@ -1,13 +1,12 @@
 import cmath
-import numpy
+import numpy as np
 
 from math import pi
-from numpy import array
+
+from skipi.function import Function
 
 from .invert import SurroundVariation, remesh
 from .sld_profile import SLDProfile, refr_idx
-
-from skipi.function import Function
 
 try:  # CRUFT: basestring isn't used in python3
     basestring
@@ -17,7 +16,6 @@ except:
 ZERO_TOL = 1e-10
 # The tolerance to decide, when the reflectivity is 1, i.e. |r - 1| < tol.
 REFLECTIVITY_UNITY_TOL = 1e-10
-MATRIX_ILL_CONDITIONED = 1e10
 
 """
     References:
@@ -101,11 +99,26 @@ class AbstractReferenceVariation(SurroundVariation):
 
         self.number_measurements = len(self._measurements)
 
+    def load_function(self, function, sld_profile, name='unknown'):
+        assert isinstance(sld_profile, SLDProfile)
+        assert isinstance(function, Function)
+
+        self._measurements.append({
+            'name': name,
+            'Qin': function.get_domain(),
+            'dQin': function.dx.eval(),
+            'Rin': function.eval(),
+            'dRin': function.dy.eval(),
+            'sld': sld_profile
+        })
+
+        self.number_measurements = len(self._measurements)
+
     def load(self, file, sld_profile, use_columns=None, q0=0):
         assert isinstance(sld_profile, SLDProfile)
 
         if isinstance(file, basestring):
-            d = numpy.loadtxt(file, usecols=use_columns).T
+            d = np.loadtxt(file, usecols=use_columns).T
             name = file
         else:
             d = file
@@ -131,7 +144,7 @@ class AbstractReferenceVariation(SurroundVariation):
             dq = dq[q > q0]
 
         if dr is None:
-            dr = numpy.array(len(r) * [0.0])
+            dr = np.array(len(r) * [0.0])
 
         dr = dr[q > q0]
         r = r[q > q0]
@@ -143,18 +156,12 @@ class AbstractReferenceVariation(SurroundVariation):
         self.number_measurements = len(self._measurements)
         return self.number_measurements
 
-    def data_manipulation(self, index, manipulation_function):
-        ms = self._measurements[index]
-        q, dq, r, dr = ms['Qin'], ms['dQin'], ms['Rin'], ms['dRin']
-        q, dq, r, dr = manipulation_function(q, dq, r, dr)
-        ms['Qin'], ms['dQin'], ms['Rin'], ms['dRin'] = q, dq, r, dr
-
     def _calc(self):
         self.Q, self.Rall, self.dR = self._phase_reconstruction()
         l = len(self.Rall)
-        self.Rp, self.Rm = numpy.zeros(l, dtype=complex), numpy.zeros(l, dtype=complex)
+        self.Rp, self.Rm = np.zeros(l, dtype=complex), np.zeros(l, dtype=complex)
         for idx, el in enumerate(self.Rall):
-            if type(el) is numpy.ndarray or type(el) is list:
+            if type(el) is np.ndarray or type(el) is list:
                 self.Rp[idx] = el[0]
                 self.Rm[idx] = el[1]
             else:
@@ -175,23 +182,54 @@ class AbstractReferenceVariation(SurroundVariation):
 
     @classmethod
     def _drefl(cls, alpha, beta, gamma, cov):
+        r"""
+        Estimates the error within the reconstructed phase information (real and imaginary part are
+        calculated separately) by the propagation of error method of the formula:
 
+        ..math::
+            R = (\beta - \alpha - 2i\gamma) / (\alpha + \beta + 2)
+
+        :param alpha: alpha_u: solution of the linear equation
+        :param beta: beta_u: solution of the linear equation
+        :param gamma: gamma_u: solution of the linear equation
+        :param cov: Covariance matrix of the linear least squares method, with the order
+            [alpha, beta, gamma] = [0, 1, 2]
+        :return: Estimated error as complex number
+        """
         a, b, g = alpha, beta, gamma
 
+        # dR/d alpha, real part
         dAlpha = - 2 * (b + 1) / (a + b + 2) ** 2
+        # dR/d beta, real part
         dBeta = 2 * (a + 1) / (a + b + 2) ** 2
+        # dR/d gamma = 0 (real part is independent of gamma)
 
+        # dR/d alpha, imag part
         dAlphaIm = -2 * g / (a + b + 2) ** 2
+        # dR/d beta, imag part
         dBetaIm = -2 * g / (a + b + 2) ** 2
+        # dR/d gamma, imag part
         dGammaIm = -2 / (a + b + 2)
 
+        r"""
+        Error propagation
+        
+        ..math::
+        Re(dR)^2 = (\frac{dR}{d\alpha} \sigma_\alpha)^2 + (\frac{dR}{d\beta} \sigma_\beta)^2 +
+            2 * \frac{dR}{d\alpha}{\frac{dR}{d\beta} \sigma_{\alpha, \beta}
+            
+        where :math:`\sigma_\alpha` denotes the error within :math:`\alpha` and :math:`\sigma_{\alpha, \beta}`
+        denotes the covariance of :math:`\alpha' and :math:`\beta`
+        
+        The error for the imaginary part is computed analogously.
+        """
         sResqr = dAlpha ** 2 * cov[0][0] + dBeta ** 2 * cov[1][1] + 2 * dAlpha * dBeta * cov[0][1]
         sImsqr = dAlphaIm ** 2 * cov[0][0] + dBetaIm ** 2 * cov[1][1] + dGammaIm ** 2 * cov[2][2] + \
                  2 * dAlphaIm * dBetaIm * cov[0][1] + \
                  2 * dAlphaIm * dGammaIm * cov[0][2] + \
                  2 * dBetaIm * dGammaIm * cov[1][2]
 
-        return numpy.sqrt(sResqr) + 1j*numpy.sqrt(sImsqr)
+        return np.sqrt(sResqr) + 1j*np.sqrt(sImsqr)
 
     @classmethod
     def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting, backing):
@@ -213,8 +251,9 @@ class AbstractReferenceVariation(SurroundVariation):
 
         :param q: The q value
         :param Rs: The reflections measured at q
+        :param dRs: The uncertainties in the measured reflections at q
         :param SLDs: The SLDs corresponding to the reflections
-        :return: q_new, Reflection
+        :return: q_new, Reflection, Error in Reflection
         """
         # Shift the q vector if the incidence medium is not vacuum
         # See eq (49) in [Majkrzak2003]
@@ -250,13 +289,13 @@ class AbstractReferenceVariation(SurroundVariation):
 
             sigma = 1e-10
 
-            # Note: the right hand side is a function of R and thus, the std deviation if the rhs is
+            # Note: the right hand side is a function of R and thus, the std deviation of the rhs is
             # simply the derivative times the std deviation of R
             if abs(dR) > ZERO_TOL:
                 sigma = drhs * dR
 
             # divide by sigma, so that we do a chi squared minimization.
-            A.append(numpy.array(lhs) / sigma)
+            A.append(np.array(lhs) / sigma)
             c.append(rhs / sigma)
 
         try:
@@ -269,9 +308,9 @@ class AbstractReferenceVariation(SurroundVariation):
         """
         Here, we reconstruct the reflection coefficients for every q.
 
-        :return: q, r(q) for each q
+        :return: q, r(q), dr(q) for each q
         """
-        qr = numpy.empty(len(self._measurements[0]['Qin']), dtype=tuple)
+        qr = np.empty(len(self._measurements[0]['Qin']), dtype=tuple)
 
         SLDs = [ms['sld'] for ms in self._measurements]
 
@@ -283,7 +322,7 @@ class AbstractReferenceVariation(SurroundVariation):
 
         qs, rs, dRs = zip(*qr[qr != None])
 
-        return numpy.array(qs), numpy.array(rs), numpy.array(dRs)
+        return np.array(qs), np.array(rs), np.array(dRs)
 
     @classmethod
     def _solve_reference_layer(cls, A, c):
@@ -306,10 +345,9 @@ class AbstractReferenceVariation(SurroundVariation):
                 The condition gamma^2 = alpha * beta - 1 will be used to construct two
                 reflection coefficients which solve the equation. A list of two reflection
                 coefficients is returned then.
-            N == 3:
-                A usual linear inversion is performed
-            N >= 4:
+            N >= 3:
                 A least squares fit is performed (A^T A x = c)
+                (which is exact for N=3)
 
             If any of the operations is not possible, (bad matrix condition number,
             quadratic eq has no real solution) a RuntimeWarning exception is raised
@@ -325,8 +363,8 @@ class AbstractReferenceVariation(SurroundVariation):
             # First, calculate alpha, beta as a function of gamma,
             # i.e. alpha = u1 - v2*gamma, beta = u2 - v2*gamma
             B = [[A[0][0], A[0][1]], [A[1][0], A[1][1]]]
-            u = numpy.linalg.solve(B, c)
-            v = numpy.linalg.solve(B, [A[0][2], A[1][2]])
+            u = np.linalg.solve(B, c)
+            v = np.linalg.solve(B, [A[0][2], A[1][2]])
             # Alternatively
             # Binv = numpy.linalg.inv(B)
             # u = numpy.dot(Binv, c)
@@ -369,32 +407,18 @@ class AbstractReferenceVariation(SurroundVariation):
                 # Returns the reflection branches, R+ and R-
                 return reflection, 0
             else:
-                # This usually happens is the reference sld's are not correct.
+                # This usually happens if the reference sld's are not correct.
                 raise RuntimeWarning("The quadratic equation has no real solution.")
-
-        """if len(A) == 3:
-            # Highly ill-conditioned, better throw away the solution than pretending it's
-            # good ...
-            # TODO: maybe least squares?
-            condition_number = numpy.linalg.cond(A)
-            if condition_number > MATRIX_ILL_CONDITIONED:
-                raise RuntimeWarning("Given linear constraints are ill conditioned. "
-                                     "Condition number {}".format(condition_number))
-
-            alpha_u, beta_u, gamma_u = numpy.linalg.solve(A, c)
-
-            return cls._refl(alpha_u, beta_u, gamma_u), 0
-        """
 
         if len(A) >= 3:
             # least squares solves exact for 3x3 matrices
             #
             # Silence the FutureWarning with rcond=None
-            solution, residuals, rank, singular_values = numpy.linalg.lstsq(A, c, rcond=None)
+            solution, residuals, rank, singular_values = np.linalg.lstsq(A, c, rcond=None)
             alpha_u, beta_u, gamma_u = solution
 
             # covariance matrix
-            C = numpy.linalg.inv(numpy.array(A).T.dot(A))
+            C = np.linalg.inv(np.array(A).T.dot(A))
 
             return cls._refl(alpha_u, beta_u, gamma_u), cls._drefl(alpha_u, beta_u, gamma_u, C)
 
@@ -456,7 +480,7 @@ class AbstractReferenceVariation(SurroundVariation):
                 pm = pm + 1
             imag_result.append(r_imag[pm % 2][idx])
 
-        return array(result) + 1j * array(imag_result), jump, djump
+        return np.array(result) + 1j * np.array(imag_result), jump, djump
 
     def plot_r_branches(self):
         import pylab
