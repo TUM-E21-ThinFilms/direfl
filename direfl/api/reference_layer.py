@@ -5,7 +5,7 @@ from math import pi
 
 from skipi.function import Function
 
-from .invert import SurroundVariation, remesh
+from .invert import SurroundVariation
 from .sld_profile import SLDProfile, refr_idx
 
 try:  # CRUFT: basestring isn't used in python3
@@ -24,9 +24,17 @@ REFLECTIVITY_UNITY_TOL = 1e-10
     Phase-Sensitive Neutron Reflectometry
 """
 
-
 class AbstractReferenceVariation(SurroundVariation):
     def __init__(self, fronting_sld, backing_sld):
+        """
+        fronting and backing sld are in units of [AA^-2].
+
+        Example:
+            For a backing SLD of Si, use backing_sld = 2.1e-6
+
+        :param fronting_sld:
+        :param backing_sld:
+        """
         self._f = float(fronting_sld)
         self._b = float(backing_sld)
         self._measurements = []
@@ -37,11 +45,26 @@ class AbstractReferenceVariation(SurroundVariation):
         self.plot_imaginary_offset = -5
 
     def run(self):
+        """
+        Runs the phase reconstruction algorithm on the loaded data set.
+
+        The result (Real and Imaginary part of the reflection) can be access by the attributes
+            self.Q, self.RealR, self.ImagR
+
+        :return: None
+        """
         self._check_measurements()
         self._calc()
         self.Qin = self.Q
 
     def _check_measurements(self):
+        """
+        Checks that the given measurements coincide on the q-grid.
+        Checks that the given SLDs are not equal (breaks the reconstruction algorithm)
+
+        :raise: RuntimeWarning if the checks fail
+        :return: None
+        """
         if len(self._measurements) <= 1:
             return
 
@@ -49,7 +72,7 @@ class AbstractReferenceVariation(SurroundVariation):
 
         for ms in self._measurements:
             if not ms['Qin'].shape == q1.shape or not all(q1 == ms['Qin']):
-                raise ValueError("Q points do not match in data files")
+                raise RuntimeWarning("Q points do not match in data files")
 
         slds = [ms['sld'] for ms in self._measurements]
 
@@ -60,18 +83,29 @@ class AbstractReferenceVariation(SurroundVariation):
                                  "different.")
 
     def remesh(self, interpolation=1, interpolation_kind=None):
+        """
+        Re-meshes the loaded data onto a common grid by interpolation.
 
-        qmin, qmax, npts = [], [], []
-        for measurement in self._measurements:
-            qmin.append(measurement['Qin'][0])
-            qmax.append(measurement['Qin'][-1])
-            npts.append(len(measurement['Qin']))
+        Usually, the reflectivity data is not measured at the very same q points. Also the min/max range of
+        the q values might vary. But, to reconstruct the phase, the reflectivity needs to be measured at
+        the same q values. This method achieves this goal.
 
-        qmin = max(qmin)
-        qmax = min(qmax)
-        npts = min(npts)
+        The new grid is the coarsest possible grid. The min/max values are chosen such that every reflectivity
+        measurement contains the min/max values.
 
-        new_mesh = numpy.linspace(qmin, qmax, npts + 1)
+        :param interpolation: integer number. Defines the number of additional interpolations between
+            two q-grid points
+        :param interpolation_kind: interpolation of the function between the point (linear/quadratic/etc..)
+            See scipy.interp1d for possible values
+        :return: None
+        """
+
+        # coarsest possible grid
+        qmin = max([ms['Qin'][0] for ms in self._measurements])
+        qmax = min([ms['Qin'][-1] for ms in self._measurements])
+        npts = min([len(ms['Qin']) for ms in self._measurements])
+
+        new_mesh = np.linspace(qmin, qmax, npts + 1)
 
         for measurement in self._measurements:
             q, R, dR = measurement['Qin'], measurement['Rin'], measurement['dRin']
@@ -84,22 +118,34 @@ class AbstractReferenceVariation(SurroundVariation):
                     new_mesh).oversample(interpolation)
                 dR = df.eval()
 
-            q, R = f.get_domain(), f.eval()
-
-            # q, R = remesh([q, R], qmin, qmax, npts, left=0, right=0)
-            # if dR is not None:
-            #    q, dR = remesh([q, dR], qmin, qmax, npts, left=0, right=0)
-            measurement['Qin'], measurement['Rin'], measurement['dRin'] = q, R, dR
+            measurement['Qin'], measurement['Rin'], measurement['dRin'] = f.get_domain(), f.eval(), dR
 
     def load_data(self, q, R, dq, dR, sld_profile, name='unknown'):
+        """
+        Load data directly
+
+        :param q: array of q
+        :param R: array of R(q)
+        :param dq: array of error in q or None
+        :param dR: array of error in R(q) or None
+        :param sld_profile: reference layer as SLDProfile
+        :param name: name of the measurement
+        :return: None
+        """
         assert isinstance(sld_profile, SLDProfile)
 
         self._measurements.append(
             {'name': name, 'Qin': q, 'dQin': dq, 'Rin': R, 'dRin': dR, 'sld': sld_profile})
 
-        self.number_measurements = len(self._measurements)
-
     def load_function(self, function, sld_profile, name='unknown'):
+        """
+        Load the reflectivity data by using the skipi function package.
+
+        :param function: reflectivity measurement, including errors in dx, dy
+        :param sld_profile: reference layer as SLDProfile
+        :param name: name of the measurement
+        :return: None
+        """
         assert isinstance(sld_profile, SLDProfile)
         assert isinstance(function, Function)
 
@@ -112,17 +158,32 @@ class AbstractReferenceVariation(SurroundVariation):
             'sld': sld_profile
         })
 
-        self.number_measurements = len(self._measurements)
+    def load(self, file, sld_profile, use_columns=None, name=None, q0=0):
+        """
+        Load the reflectivity data by reading from a file.
 
-    def load(self, file, sld_profile, use_columns=None, q0=0):
+        File structure:
+            q, R(q), [dR(q)] for 2-3 column files
+            q, dq, R(q), dR(q), [wavelength] for 4-5 column files
+
+        :param file: file name
+        :param sld_profile: reference layer as SLDProfile
+        :param use_columns: columns to read the data from
+        :param name: optional name of the measurement, if None then filename is used
+        :param q0: minimum q value to consider, all measurements below q0 are discarded
+        :return: None
+        """
         assert isinstance(sld_profile, SLDProfile)
 
         if isinstance(file, basestring):
             d = np.loadtxt(file, usecols=use_columns).T
-            name = file
+            _name = file
         else:
             d = file
-            name = "SimData{}".format(len(self._measurements) + 1)
+            _name = "Measurement {}".format(len(self._measurements) + 1)
+
+        if name is None:
+            name = _name
 
         q, dq, r, dr = None, None, None, None
 
@@ -140,25 +201,20 @@ class AbstractReferenceVariation(SurroundVariation):
         elif ncols >= 5:
             q, dq, r, dr, lamb = d[0:5]
 
-        if dq is not None:
-            dq = dq[q > q0]
-
-        if dr is None:
-            dr = np.array(len(r) * [0.0])
-
-        dr = dr[q > q0]
+        dq = dq[q > q0] if dq is not None else None
+        dr = dr[q > q0] if dr is not None else np.zeros(len(r))
         r = r[q > q0]
         q = q[q > q0]
 
         self._measurements.append(
             {'name': name, 'Qin': q, 'dQin': dq, 'Rin': r, 'dRin': dr, 'sld': sld_profile})
 
-        self.number_measurements = len(self._measurements)
-        return self.number_measurements
-
     def _calc(self):
         self.Q, self.Rall, self.dR = self._phase_reconstruction()
         l = len(self.Rall)
+
+        # If only two measurements are supplied, Rall contains then
+        # two branches of the reflection. This code splits the tuple up into R+ and R-
         self.Rp, self.Rm = np.zeros(l, dtype=complex), np.zeros(l, dtype=complex)
         for idx, el in enumerate(self.Rall):
             if type(el) is np.ndarray or type(el) is list:
@@ -178,7 +234,7 @@ class AbstractReferenceVariation(SurroundVariation):
         # gamma_u where these parameters are the solution of the matrix equation
         #
         # See eq (38)-(40) in [Majkrzak2003]
-        return - (alpha_u - beta_u + 2*1j * gamma_u) / (alpha_u + beta_u + 2)
+        return - (alpha_u - beta_u + 2 * 1j * gamma_u) / (alpha_u + beta_u + 2)
 
     @classmethod
     def _drefl(cls, alpha, beta, gamma, cov):
@@ -229,7 +285,7 @@ class AbstractReferenceVariation(SurroundVariation):
                  2 * dAlphaIm * dGammaIm * cov[0][2] + \
                  2 * dBetaIm * dGammaIm * cov[1][2]
 
-        return np.sqrt(sResqr) + 1j*np.sqrt(sImsqr)
+        return np.sqrt(sResqr) + 1j * np.sqrt(sImsqr)
 
     @classmethod
     def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting, backing):
@@ -527,7 +583,6 @@ class AbstractReferenceVariation(SurroundVariation):
 
 
 class BottomReferenceVariation(AbstractReferenceVariation):
-
     @classmethod
     def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting,
                               backing):
@@ -557,7 +612,6 @@ class BottomReferenceVariation(AbstractReferenceVariation):
 
 
 class TopReferenceVariation(AbstractReferenceVariation):
-
     @classmethod
     def _calc_refl_constraint(cls, q, reflectivity, sld_reference, fronting,
                               backing):
